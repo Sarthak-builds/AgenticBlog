@@ -1,7 +1,7 @@
 from __future__ import annotations
 import operator
 from pydoc import describe
-from typing import TypedDict, List, Annotated
+from typing import TypedDict, List, Annotated, Optional
 from pydantic import BaseModel, Field
 from typing import Literal
 from langgraph.graph import StateGraph, START, END
@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 import os
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langsmith import traceable
+from langchain_community.tools.tavily_search import TavilySearchResults
 
 load_dotenv()
 
@@ -19,7 +20,7 @@ llm = ChatGoogleGenerativeAI(
     model="gemini-3.8-flash",
     google_api_key=os.getenv("GEMINI_API_KEY"),
     temperature=0.7,
-    max_tokens=4096,
+    max_tokens=8192,
 )
 
 class Task(BaseModel):
@@ -45,12 +46,73 @@ class Task(BaseModel):
         ...,
         description="Use 'common_mistakes' exactly once in the plan.",
     )
+    tags: List[str] = Field(
+        ...,
+        description="Short topical tags for this section.",
+    )
+    requires_research: bool = Field(
+        ...,
+        description="Whether this section needs external research/evidence.",
+    )
+    requires_citations: bool = Field(
+        ...,
+        description="Whether this section needs citations to sources.",
+    )
+    requires_code: bool = Field(
+        ...,
+        description="Whether this section should include a code example.",
+    )
 
 class Plan(BaseModel):
-    blog_title:str
-    audience: str  = Field(..., description="Who this blog is for.")
+    blog_title: str = Field(..., description="Title of the blog post.")
+    audience: str = Field(..., description="Who this blog is for.")
     tone: str = Field(..., description="Writing tone (e.g., practical, crisp)")
-    tasks: List[Task]    
+    blog_kind: Literal["explainer", "tutorial", "news_roundup", "comparison", "system_design"] = Field(
+        ...,
+        description="Kind of blog post being planned.",
+    )
+    constraints: List[str] = Field(
+        ...,
+        description="Constraints the writers must honor (length, style, requirements).",
+    )
+    tasks: List[Task]
+
+class RouterDecision(BaseModel):
+    needs_research: bool = Field(
+        ...,
+        description="Whether external research is needed for this topic.",
+    )
+    mode: Literal["closed_book", "hybrid", "open_book"] = Field(
+        ...,
+        description="closed_book = no research; hybrid = light research; open_book = heavy research.",
+    )
+    reason: str = Field(
+        ...,
+        description="One sentence explaining the decision.",
+    )
+    queries: List[str] = Field(
+        ...,
+        description="Search queries to run if research is needed.",
+    )
+
+class EvidenceItem(BaseModel):
+    title: str = Field(..., description="Title of the source.")
+    url: str = Field(..., description="URL of the source.")
+    published_at: Optional[str] = Field(
+        None, description="Publication date if known (ISO format)."
+    )
+    snippet: Optional[str] = Field(
+        None, description="Short relevant excerpt from the source."
+    )
+    source: Optional[str] = Field(
+        None, description="Publisher/site name, e.g. 'OpenAI Blog'."
+    )
+
+class EvidencePack(BaseModel):
+    evidence: List[EvidenceItem] = Field(
+        ...,
+        description="Collected evidence items from research.",
+    )
 
 class State(TypedDict):
     topic:str
@@ -62,16 +124,7 @@ class State(TypedDict):
 @traceable(name="orchestrator -> plan")
 def orchestrator(state: State) -> dict:
 
-    planner = (
-        llm.with_structured_output(Plan)
-        .with_retry(
-            retry_if_exception_type=[OutputParserException],
-            stop_after_attempt=3,
-            exponential_backoff=True,
-        )
-    )
-
-    plan = planner.invoke(
+    plan = llm.with_structured_output(Plan).invoke(
         [
             SystemMessage(
                 content=(
@@ -126,7 +179,7 @@ def worker(payload: dict) -> dict:
 
     blog_title = plan.blog_title
 
-    section_md = llm.invoke(
+    content = llm.invoke(
         [
             SystemMessage(
                 content=(
@@ -165,9 +218,19 @@ def worker(payload: dict) -> dict:
                          "return only the section content in markdown."
             ),
         ]
-    ).content.strip()
+    ).content
 
-    return {'sections':[section_md]}
+    section_md = extract_text(content).strip()
+
+def extract_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            part.get("text", "") if isinstance(part, dict) else getattr(part, "text", "")
+            for part in content
+        )
+    return str(content)
 
 # reduceeer
 
