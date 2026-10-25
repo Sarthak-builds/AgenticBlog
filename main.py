@@ -94,4 +94,16 @@ def reducer(state:State)-> dict:
     return {'final': final_md}
 
 
+graph = StateGraph(State)
+graph.add_node("orchestrator", orchestrator)
+graph.add_node("worker", worker)
+graph.add_node("reducer", reducer)
 
+graph.add_edge(START, "orchestrator")
+graph.add_conditional_edges("orchestrator", fanout, ["worker"])
+graph.add_edge("worker", "reducer")
+graph.add_edge("reducer", END)
+
+app = graph.compile()
+
+out = app.invoke({"topic": "write a blog on self Attention", "sections": []})
