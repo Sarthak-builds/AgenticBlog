@@ -34,3 +34,16 @@ class State(TypedDict):
     sections: Annotated[List[str], operator.add]
     final:str
 
+def orchestrator(state: State) -> dict:
+
+    plan = llm.with_structured_output(Plan).invoke(
+        [
+            SystemMessage(
+                content=(
+                    "Create a blog plan with 5-7 sections on the following topic."
+                )
+            ), 
+            HumanMessage(content=f'Topic: {state['topic']}')
+        ]
+    )
+    return {'plan':plan}
