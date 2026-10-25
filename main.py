@@ -47,3 +47,51 @@ def orchestrator(state: State) -> dict:
         ]
     )
     return {'plan':plan}
+
+# we do not know, how many workers we have, so we use send api for number of workers for each number of tasks in the plan output.
+
+def fanout(state:State):
+    return [Send('worker', {'task': task, "topic": state["topic"], "plan":state["plan"]})
+            for task in state["plan"].tasks]
+
+def worker(payload: dict) -> dict:
+
+    task = payload['task']
+    topic = payload['topic']
+    plan = payload['plan']
+
+    blog_title = plan.blog_title
+
+    section_md = llm.invoke(
+        [
+            SystemMessage(content="Write one clear Markdown Section."),
+            HumanMessage(
+                content= f'Blog: {blog_title}\n'
+                         f'"Topic: {topic}\n\n'
+                         f'Section: {task.title}\n'
+                         f'Brief: {task.brief}\n\n'
+                         "return only the section content in markdown."
+            ),
+        ]
+    ).content.strip()
+
+    return {'sections':[section_md]}
+
+# reduceeer
+
+from pathlib import Path
+
+def reducer(state:State)-> dict:
+    title = state['plan'].blog_title
+    body = "\n\n".join(state["sections"]).strip()
+
+    final_md =f'# {title}\n\n{body}\n'
+
+    filename = title.lower().replace(" ", "-") + ".md"
+    output_path = Path(filename)
+    output_path.write_text(final_md, encoding="utf-8")
+
+    return {'final': final_md}
+
+
+
