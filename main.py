@@ -7,9 +7,11 @@ from typing import Literal
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import Send
 from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.exceptions import OutputParserException
 from dotenv import load_dotenv
 import os
 from langchain_google_genai import ChatGoogleGenerativeAI
+from langsmith import traceable
 
 load_dotenv()
 
@@ -17,7 +19,7 @@ llm = ChatGoogleGenerativeAI(
     model="gemini-3.8-flash",
     google_api_key=os.getenv("GEMINI_API_KEY"),
     temperature=0.7,
-    max_tokens=1500,
+    max_tokens=4096,
 )
 
 class Task(BaseModel):
@@ -57,9 +59,19 @@ class State(TypedDict):
     sections: Annotated[List[str], operator.add]
     final:str
 
+@traceable(name="orchestrator -> plan")
 def orchestrator(state: State) -> dict:
 
-    plan = llm.with_structured_output(Plan).invoke(
+    planner = (
+        llm.with_structured_output(Plan)
+        .with_retry(
+            retry_if_exception_type=[OutputParserException],
+            stop_after_attempt=3,
+            exponential_backoff=True,
+        )
+    )
+
+    plan = planner.invoke(
         [
             SystemMessage(
                 content=(
@@ -100,10 +112,12 @@ def orchestrator(state: State) -> dict:
 
 # we do not know, how many workers we have, so we use send api for number of workers for each number of tasks in the plan output.
 
+@traceable(name="fanout -> dispatch workers")
 def fanout(state:State):
     return [Send('worker', {'task': task, "topic": state["topic"], "plan":state["plan"]})
             for task in state["plan"].tasks]
 
+@traceable(name="worker -> write section")
 def worker(payload: dict) -> dict:
 
     task = payload['task']
@@ -159,6 +173,7 @@ def worker(payload: dict) -> dict:
 
 from pathlib import Path
 
+@traceable(name="reducer -> assemble blog")
 def reducer(state:State)-> dict:
     title = state['plan'].blog_title
     body = "\n\n".join(state["sections"]).strip()
@@ -185,3 +200,5 @@ graph.add_edge("reducer", END)
 app = graph.compile()
 
 out = app.invoke({"topic": "write a blog on self Attention", "sections": []})
+
+print(out['final'])
