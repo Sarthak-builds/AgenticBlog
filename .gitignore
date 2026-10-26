@@ -29,3 +29,12 @@ Thumbs.db
 tmp/
 *.tmp
 venv
+
+# Runtime artifacts
+__pycache__/
+*.pyc
+chatbot.db*
+rag_chatbot.db*
+
+# Local agent notes
+AGENTS.md
